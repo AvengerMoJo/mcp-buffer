@@ -220,14 +220,23 @@ class GoogleDriveBuffer(BufferBackend):
                     "requests": [
                         {
                             "updateCells": {
-                                "range": {
+                                "rows": [
+                                    {
+                                        "values": [
+                                            {"userEnteredValue": {"stringValue": entry.id}},
+                                            {"userEnteredValue": {"stringValue": entry.content}},
+                                            {"userEnteredValue": {"stringValue": entry.created_at.isoformat()}},
+                                            {"userEnteredValue": {"stringValue": entry.updated_at.isoformat()}},
+                                            {"userEnteredValue": {"stringValue": json.dumps(entry.metadata)}},
+                                        ]
+                                    }
+                                ],
+                                "fields": "userEnteredValue",
+                                "start": {
                                     "sheetId": self._get_sheet_metadata()["sheets"][0]["properties"]["sheetId"],
-                                    "startIndex": row_index - 1,
-                                    "endIndex": row_index,
-                                    "startColumnIndex": 0,
-                                    "endColumnIndex": 5
-                                },
-                                "fields": "content,userEnteredValue"
+                                    "rowIndex": row_index - 1,
+                                    "columnIndex": 0
+                                }
                             }
                         }
                     ]

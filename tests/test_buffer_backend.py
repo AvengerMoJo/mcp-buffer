@@ -153,6 +153,17 @@ class TestLocalFileBackendLinkAndStream:
             assert resp.read() == b"2345"
 
     @pytest.mark.asyncio
+    async def test_head_request_returns_headers_no_body(self, local_backend: LocalFileBackend):
+        import urllib.request
+
+        entry = await local_backend.buffer_upload(b"head me", filename="h.txt")
+        req = urllib.request.Request(entry.link, method="HEAD")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            assert resp.status == 200
+            assert resp.headers.get("Content-Length") == str(len(b"head me"))
+            assert resp.read() == b""
+
+    @pytest.mark.asyncio
     async def test_get_link_unknown_id_raises(self, local_backend: LocalFileBackend):
         with pytest.raises(BufferBackendError):
             await local_backend.get_link("does-not-exist")
@@ -222,6 +233,29 @@ class TestLocalFileBackendExpireAndList:
     @pytest.mark.asyncio
     async def test_can_reuse_false_for_unknown(self, local_backend: LocalFileBackend):
         assert await local_backend.can_reuse("nope") is False
+
+
+class TestLocalFileBackendPublicUrl:
+    @pytest.mark.asyncio
+    async def test_public_url_env_var_overrides_link_host(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MCP_BUFFER_PUBLIC_URL", "https://buffer.eclipsogate.org")
+        backend = LocalFileBackend(store_dir=str(tmp_path))
+        entry = await backend.buffer_upload(b"public", filename="p.txt")
+        assert entry.link == f"https://buffer.eclipsogate.org/{entry.buffer_id}"
+
+    @pytest.mark.asyncio
+    async def test_public_url_trailing_slash_is_stripped(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MCP_BUFFER_PUBLIC_URL", "https://buffer.eclipsogate.org/")
+        backend = LocalFileBackend(store_dir=str(tmp_path))
+        entry = await backend.buffer_upload(b"public", filename="p.txt")
+        assert entry.link == f"https://buffer.eclipsogate.org/{entry.buffer_id}"
+
+    @pytest.mark.asyncio
+    async def test_no_public_url_falls_back_to_local_server(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MCP_BUFFER_PUBLIC_URL", raising=False)
+        backend = LocalFileBackend(store_dir=str(tmp_path))
+        entry = await backend.buffer_upload(b"local", filename="l.txt")
+        assert entry.link.startswith("http://127.0.0.1:")
 
 
 class TestLocalFileBackendPersistence:

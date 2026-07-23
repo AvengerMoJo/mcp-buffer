@@ -14,9 +14,13 @@ from .registry import BufferRegistry
 from .tools import register_buffer_tools
 
 
-def create_server() -> FastMCP:
-    """Create and configure the MCP server."""
-    mcp = FastMCP("mcp-buffer")
+def create_server(host: str = "127.0.0.1", port: int = 8001) -> FastMCP:
+    """Create and configure the MCP server.
+
+    host/port only matter for the "sse"/"streamable-http" transports --
+    FastMCP takes them as constructor args, not run() kwargs.
+    """
+    mcp = FastMCP("mcp-buffer", host=host, port=port)
 
     backend_name = os.environ.get("MCP_BUFFER_BACKEND", "local")
     try:
@@ -42,12 +46,12 @@ def main():
                        help="Port to bind to (for SSE transport)")
     args = parser.parse_args()
 
-    mcp = create_server()
+    mcp = create_server(host=args.host, port=args.port)
 
     if args.transport == "stdio":
         mcp.run(transport="stdio")
     else:
-        mcp.run(transport="sse", host=args.host, port=args.port)
+        mcp.run(transport="sse")
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ from .models import BufferEntry
 from .registry import BufferRegistry
 
 _DIR_ENV_VAR = "MCP_BUFFER_LOCAL_DIR"
+_PUBLIC_URL_ENV_VAR = "MCP_BUFFER_PUBLIC_URL"
 
 
 @BufferRegistry.register("local")
@@ -71,7 +72,7 @@ class LocalFileBackend(BufferBackend):
             provider="local",
             filename=filename,
             mime_type=resolved_mime,
-            link=f"{self._server.base_url()}/{buffer_id}",
+            link=f"{self._base_link_url()}/{buffer_id}",
             size_bytes=dest.stat().st_size,
             expires_at=expires_at,
             folder_id=folder_id,
@@ -118,6 +119,16 @@ class LocalFileBackend(BufferBackend):
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _base_link_url(self) -> str:
+        """Public-facing base URL for links, e.g. https://buffer.eclipsogate.org
+        via MCP_BUFFER_PUBLIC_URL when this server sits behind a reverse
+        proxy / tunnel; falls back to the local server's own loopback
+        address for same-host use."""
+        public = os.environ.get(_PUBLIC_URL_ENV_VAR)
+        if public:
+            return public.rstrip("/")
+        return self._server.base_url()
 
     def _write_content(self, content: Union[str, bytes], dest: Path) -> None:
         if isinstance(content, (bytes, bytearray)):

@@ -16,11 +16,15 @@ first one.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+
+_PORT_ENV_VAR = "MCP_BUFFER_HTTP_PORT"
+_HOST_ENV_VAR = "MCP_BUFFER_HTTP_HOST"
 
 _RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
@@ -48,6 +52,12 @@ class _Handler(BaseHTTPRequestHandler):
         pass  # silence default stderr access logging
 
     def do_GET(self):  # noqa: N802 - stdlib method name
+        self._serve(send_body=True)
+
+    def do_HEAD(self):  # noqa: N802 - stdlib method name
+        self._serve(send_body=False)
+
+    def _serve(self, send_body: bool) -> None:
         buffer_id = self.path.strip("/").split("/")[0]
         resolved = _resolve(buffer_id)
         if resolved is None:
@@ -82,6 +92,9 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
 
+        if not send_body:
+            return
+
         with open(file_path, "rb") as f:
             f.seek(start)
             remaining = length
@@ -100,8 +113,8 @@ class BufferHTTPServer:
     _instance: Optional["BufferHTTPServer"] = None
     _lock = threading.Lock()
 
-    def __init__(self, host: str = "127.0.0.1"):
-        self._host = host
+    def __init__(self, host: Optional[str] = None):
+        self._host = host or os.environ.get(_HOST_ENV_VAR) or "127.0.0.1"
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._port = 0
@@ -114,9 +127,11 @@ class BufferHTTPServer:
                 cls._instance.start()
             return cls._instance
 
-    def start(self, port: int = 0) -> int:
+    def start(self, port: Optional[int] = None) -> int:
         if self._httpd is not None:
             return self._port
+        if port is None:
+            port = int(os.environ.get(_PORT_ENV_VAR, "0"))
         self._httpd = ThreadingHTTPServer((self._host, port), _Handler)
         self._port = self._httpd.server_address[1]
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)

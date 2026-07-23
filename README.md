@@ -62,6 +62,32 @@ await backend.expire(entry.buffer_id)
   `filename`, `mime_type`, `size_bytes`, `expires_at`, ...) so callers
   never need backend-specific logic.
 
+## Running behind a public domain (e.g. Cloudflare Tunnel)
+
+By default the local server binds loopback-only on a random port, and
+links point at `http://127.0.0.1:<port>` — fine for same-host use, useless
+to any external consumer (NotebookLM, an OCR service, a remote agent).
+Three env vars make it reachable from a real domain without touching the
+loopback bind (a tunnel like `cloudflared` connects to the local port
+directly, so `127.0.0.1` is still correct/safer as the bind address):
+
+```bash
+export MCP_BUFFER_HTTP_HOST=127.0.0.1      # what the server binds
+export MCP_BUFFER_HTTP_PORT=8600           # fixed port a tunnel config can target
+export MCP_BUFFER_PUBLIC_URL=https://buffer.example.com  # what links use instead of 127.0.0.1:PORT
+```
+
+Then point one `cloudflared` ingress rule at the fixed port:
+
+```yaml
+- hostname: buffer.example.com
+  service: http://127.0.0.1:8600
+```
+
+If your zone already has a wildcard DNS record (`*.example.com` CNAME to
+the tunnel), no new DNS record is needed — the ingress rule alone routes
+that hostname to this service.
+
 ## Design notes
 
 - `content` passed to `buffer_upload` may be a local filesystem path (the

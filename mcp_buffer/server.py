@@ -2,44 +2,30 @@
 
 import os
 import sys
-from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from .backend import BufferBackend
-from .google_drive import GoogleDriveBuffer
+# Importing local_backend registers "local" with BufferRegistry as a side
+# effect (the @BufferRegistry.register("local") decorator). Any additional
+# backend module (google_drive, onedrive, s3, nextcloud, ...) should be
+# imported the same way to make itself available here.
+from . import local_backend  # noqa: F401
 from .registry import BufferRegistry
 from .tools import register_buffer_tools
 
 
 def create_server() -> FastMCP:
-    """Create and configure the MCP server.
-
-    Returns:
-        Configured FastMCP server instance.
-    """
+    """Create and configure the MCP server."""
     mcp = FastMCP("mcp-buffer")
 
-    # Get the backend from environment or default to Google Drive
-    backend_name = os.environ.get("MCP_BUFFER_BACKEND", "google_drive")
+    backend_name = os.environ.get("MCP_BUFFER_BACKEND", "local")
+    try:
+        backend = BufferRegistry.get_backend(backend_name)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
-    if backend_name == "google_drive":
-        sheet_id = os.environ.get("MCP_BUFFER_DRIVE_SHEET_ID")
-        if not sheet_id:
-            print("Error: MCP_BUFFER_DRIVE_SHEET_ID environment variable is required for Google Drive backend")
-            sys.exit(1)
-        backend = GoogleDriveBuffer(sheet_id=sheet_id)
-    else:
-        # Try to get from registry
-        try:
-            backend = BufferRegistry.get_backend(backend_name)
-        except ValueError as e:
-            print(f"Error: {e}")
-            sys.exit(1)
-
-    # Register tools
     register_buffer_tools(mcp, backend)
-
     return mcp
 
 

@@ -4,14 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcp-buffer"
-version = "0.1.0"
-description = "MCP Buffer - A buffer system for MCP with Google Drive integration"
+version = "0.2.0"
+description = "MCP file-handoff buffer: push large/binary files agents can't process locally, get back a streamable link"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "google-api-python-client>=2.0",
-    "google-auth-httplib2",
-    "google-auth-oauthlib",
     "mcp>=1.0",
     "pydantic>=2.0",
 ]
@@ -19,8 +16,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
+    "pytest-asyncio>=0.23",
     "pytest-cov",
 ]
+# Future cloud backends pull in their own SDK only when selected, e.g.:
+# gdrive = ["google-api-python-client>=2.0", "google-auth-httplib2", "google-auth-oauthlib"]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -1,24 +1,75 @@
 # mcp-buffer
 
-Personal cloud storage buffer layer for MCP — upload large content to Google Drive/Dropbox and pass URLs to agents.
+A file-handoff buffer layer for MCP agents. When an agent has a file it
+can't process locally — too large, wrong format, needs a backend that can
+decode it — it pushes the file into the buffer and gets back a URL a
+consumer can GET/stream, instead of trying to cram the bytes through a
+JSON-RPC tool call.
 
 ## Install
 
 ```bash
-pip install mcp-buffer
+pip install -e .
 ```
 
-## Quick start
+## Quick start (as an MCP server)
+
+```bash
+python -m mcp_buffer.server --transport stdio
+```
+
+Exposes 4 tools: `buffer_upload_file(path, filename?, mime_type?, ttl_seconds?, folder_id?)`,
+`buffer_get_link(buffer_id)`, `buffer_list(folder_id?)`, `buffer_expire(buffer_id)`.
+
+## Quick start (as a library)
 
 ```python
-from mcp_buffer.tools import buffer_upload_file, buffer_expire
+from mcp_buffer.local_backend import LocalFileBackend
 
-result = await buffer_upload_file(content="Hello", filename="note.txt")
-print(result["link"])
-await buffer_expire(result["buffer_id"])
+backend = LocalFileBackend()
+entry = await backend.buffer_upload("/path/to/report.pdf", filename="report.pdf")
+print(entry.link)          # http://127.0.0.1:PORT/<buffer_id> -- streams with Range support
+await backend.expire(entry.buffer_id)
 ```
 
 ## Backends
 
-- **Google Drive** (Phase 1) — 15GB free, NotebookLM native
-- **Dropbox** (Phase 2) — coming soon
+- **local** (default, ships today) — stores files on disk under
+  `MCP_BUFFER_LOCAL_DIR` (default `~/.mcp-buffer/store`), serves them back
+  over a lazily-started local HTTP server with byte-range support. No
+  cloud auth required — this is also the reference implementation every
+  other backend should match.
+- **Google Drive / OneDrive / S3 / Nextcloud** — not implemented yet.
+  Add one by subclassing `BufferBackend` (`mcp_buffer/backend.py`) and
+  registering it:
+
+  ```python
+  from mcp_buffer.registry import BufferRegistry
+  from mcp_buffer.backend import BufferBackend
+
+  @BufferRegistry.register("gdrive")
+  class GoogleDriveBackend(BufferBackend):
+      async def buffer_upload(self, content, filename, mime_type=None,
+                               ttl_seconds=None, folder_id=None): ...
+      async def get_link(self, buffer_id): ...
+      async def expire(self, buffer_id): ...
+      async def list(self, folder_id=None): ...
+      async def can_reuse(self, buffer_id): ...
+  ```
+
+  Select it with `MCP_BUFFER_BACKEND=gdrive` (see `server.py`). Every
+  backend returns the same shape (`BufferEntry`: `buffer_id`, `link`,
+  `filename`, `mime_type`, `size_bytes`, `expires_at`, ...) so callers
+  never need backend-specific logic.
+
+## Design notes
+
+- `content` passed to `buffer_upload` may be a local filesystem path (the
+  common case — an agent already has the file on disk) or raw bytes.
+- TTL (`ttl_seconds`) is enforced lazily on access (`get_link`/`can_reuse`)
+  and swept on `list()` — no background job required.
+- The local backend's HTTP server is a single stdlib `ThreadingHTTPServer`
+  shared process-wide across every `LocalFileBackend` instance (even ones
+  pointed at different `store_dir`s); files are looked up by `buffer_id`
+  through a shared in-process table, not bound to whichever backend
+  instance happened to start the server first.

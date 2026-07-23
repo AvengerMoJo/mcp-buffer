@@ -1,7 +1,14 @@
-"""Abstract buffer backend interface."""
+"""Abstract buffer backend interface.
+
+Every backend (local filesystem today; Google Drive/OneDrive/S3/Nextcloud
+as future plugins) implements this same contract so tools.py and any
+caller never needs to know which one is active.
+"""
+
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Union
 
 from .models import BufferEntry
 
@@ -9,83 +16,52 @@ from .models import BufferEntry
 class BufferBackendError(Exception):
     """Base exception for buffer backend errors."""
 
-    pass
-
 
 class BufferBackend(ABC):
-    """Abstract base class for buffer backends.
-
-    Subclasses must implement all methods to provide concrete storage mechanisms.
-    """
+    """Abstract base class for buffer backends."""
 
     @abstractmethod
-    async def create_entry(self, entry: BufferEntry) -> BufferEntry:
-        """Create a new buffer entry.
+    async def buffer_upload(
+        self,
+        content: Union[str, bytes],
+        filename: str,
+        mime_type: Optional[str] = None,
+        ttl_seconds: Optional[int] = None,
+        folder_id: Optional[str] = None,
+    ) -> BufferEntry:
+        """Store a file and return its BufferEntry.
 
         Args:
-            entry: The buffer entry to create.
-
-        Returns:
-            The created entry with updated fields if applicable.
+            content: A local filesystem path to copy in, or raw bytes.
+            filename: Name to store/serve the file as.
+            mime_type: Content-Type; guessed from filename if omitted.
+            ttl_seconds: Optional expiry, relative to now.
+            folder_id: Optional backend-specific grouping key.
 
         Raises:
-            BufferBackendError: If creation fails.
+            BufferBackendError: If the upload fails.
         """
-        pass
 
     @abstractmethod
-    async def get_entry(self, entry_id: str) -> Optional[BufferEntry]:
-        """Retrieve a buffer entry by ID.
-
-        Args:
-            entry_id: The unique identifier of the entry.
-
-        Returns:
-            The requested entry, or None if not found.
+    async def get_link(self, buffer_id: str) -> str:
+        """Return a URL a consumer can GET/stream the file from.
 
         Raises:
-            BufferBackendError: If retrieval fails for non-technical reasons.
+            BufferBackendError: If buffer_id is unknown or expired.
         """
-        pass
 
     @abstractmethod
-    async def update_entry(self, entry: BufferEntry) -> BufferEntry:
-        """Update an existing buffer entry.
-
-        Args:
-            entry: The buffer entry with updated content.
-
-        Returns:
-            The updated entry.
+    async def expire(self, buffer_id: str) -> None:
+        """Mark an entry expired and release its storage.
 
         Raises:
-            BufferBackendError: If the entry doesn't exist or update fails.
+            BufferBackendError: If buffer_id is unknown.
         """
-        pass
 
     @abstractmethod
-    async def delete_entry(self, entry_id: str) -> bool:
-        """Delete a buffer entry by ID.
-
-        Args:
-            entry_id: The unique identifier of the entry to delete.
-
-        Returns:
-            True if deleted, False if not found.
-
-        Raises:
-            BufferBackendError: If deletion fails for non-technical reasons.
-        """
-        pass
+    async def list(self, folder_id: Optional[str] = None) -> list[BufferEntry]:
+        """List active entries, newest first, optionally filtered by folder_id."""
 
     @abstractmethod
-    async def list_entries(self) -> list[BufferEntry]:
-        """List all buffer entries.
-
-        Returns:
-            A list of all buffer entries, ordered by creation time (newest first).
-
-        Raises:
-            BufferBackendError: If listing fails for non-technical reasons.
-        """
-        pass
+    async def can_reuse(self, buffer_id: str) -> bool:
+        """True if buffer_id still exists and has not expired."""

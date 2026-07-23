@@ -1,145 +1,97 @@
 """MCP tools for buffer operations."""
 
-from typing import Any
+from __future__ import annotations
+
+import os
+from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP
 
-from .backend import BufferBackend
-from .models import BufferEntry
+from .backend import BufferBackend, BufferBackendError
 
 
 def register_buffer_tools(mcp: FastMCP, backend: BufferBackend) -> None:
-    """Register MCP tools for buffer operations with a FastMCP server.
-
-    Args:
-        mcp: The FastMCP server instance.
-        backend: The buffer backend to use for operations.
-    """
+    """Register MCP tools for buffer operations with a FastMCP server."""
 
     @mcp.tool()
-    async def buffer_create(content: str, metadata: dict[str, str] | None = None) -> dict[str, Any]:
-        """Create a new buffer entry with content and optional metadata.
+    async def buffer_upload_file(
+        path: str,
+        filename: Optional[str] = None,
+        mime_type: Optional[str] = None,
+        ttl_seconds: Optional[int] = None,
+        folder_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Push a local file into the buffer and get back a streamable link.
+
+        Use this when you have a file on disk you can't process directly
+        (too large, wrong format, needs a backend that can decode it) and
+        need to hand it off by URL instead of by JSON-RPC payload.
 
         Args:
-            content: The content to store in the buffer entry.
-            metadata: Optional key-value pairs for additional metadata.
+            path: Local filesystem path of the file to buffer.
+            filename: Name to store/serve it as; defaults to path's basename.
+            mime_type: Content-Type; guessed from filename if omitted.
+            ttl_seconds: Optional expiry, relative to now.
+            folder_id: Optional grouping key (backend-specific).
 
         Returns:
-            Information about the created entry including its ID.
+            buffer_id, link, filename, mime_type, size_bytes, expires_at;
+            or {"error": ...} if the upload failed.
         """
-        import uuid
-        from datetime import datetime, timezone
-
-        entry = BufferEntry(
-            id=str(uuid.uuid4()),
-            content=content,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-            metadata=metadata or {}
-        )
-        result = await backend.create_entry(entry)
+        resolved_filename = filename or os.path.basename(path)
+        try:
+            entry = await backend.buffer_upload(
+                content=path,
+                filename=resolved_filename,
+                mime_type=mime_type,
+                ttl_seconds=ttl_seconds,
+                folder_id=folder_id,
+            )
+        except BufferBackendError as e:
+            return {"error": str(e)}
         return {
-            "id": result.id,
-            "created_at": result.created_at.isoformat(),
-            "message": "Entry created successfully"
+            "buffer_id": entry.buffer_id,
+            "link": entry.link,
+            "filename": entry.filename,
+            "mime_type": entry.mime_type,
+            "size_bytes": entry.size_bytes,
+            "expires_at": entry.expires_at.isoformat() if entry.expires_at else None,
         }
 
     @mcp.tool()
-    async def buffer_get(entry_id: str) -> dict[str, Any]:
-        """Retrieve a buffer entry by its ID.
-
-        Args:
-            entry_id: The unique identifier of the entry to retrieve.
-
-        Returns:
-            The requested entry's content and metadata, or an error message if not found.
-        """
+    async def buffer_get_link(buffer_id: str) -> dict[str, Any]:
+        """Return the streamable link for a previously buffered file."""
         try:
-            entry = await backend.get_entry(entry_id)
-            if entry is None:
-                return {"error": f"Entry with ID '{entry_id}' not found"}
-            return {
-                "id": entry.id,
-                "content": entry.content,
-                "created_at": entry.created_at.isoformat(),
-                "updated_at": entry.updated_at.isoformat(),
-                "metadata": entry.metadata
-            }
-        except Exception as e:
-            return {"error": f"Failed to retrieve entry: {str(e)}"}
+            link = await backend.get_link(buffer_id)
+        except BufferBackendError as e:
+            return {"error": str(e)}
+        return {"buffer_id": buffer_id, "link": link}
 
     @mcp.tool()
-    async def buffer_update(entry_id: str, content: str) -> dict[str, Any]:
-        """Update the content of an existing buffer entry.
-
-        Args:
-            entry_id: The unique identifier of the entry to update.
-            content: The new content for the entry.
-
-        Returns:
-            Confirmation that the entry was updated.
-        """
-        from datetime import datetime, timezone
-
-        try:
-            existing = await backend.get_entry(entry_id)
-            if existing is None:
-                return {"error": f"Entry with ID '{entry_id}' not found"}
-
-            entry = BufferEntry(
-                id=existing.id,
-                content=content,
-                created_at=existing.created_at,
-                updated_at=datetime.now(timezone.utc),
-                metadata=existing.metadata
-            )
-            await backend.update_entry(entry)
-            return {
-                "id": entry_id,
-                "updated_at": entry.updated_at.isoformat(),
-                "message": "Entry updated successfully"
-            }
-        except Exception as e:
-            return {"error": f"Failed to update entry: {str(e)}"}
+    async def buffer_list(folder_id: Optional[str] = None) -> dict[str, Any]:
+        """List active buffered files, newest first."""
+        entries = await backend.list(folder_id=folder_id)
+        return {
+            "count": len(entries),
+            "entries": [
+                {
+                    "buffer_id": e.buffer_id,
+                    "filename": e.filename,
+                    "mime_type": e.mime_type,
+                    "link": e.link,
+                    "size_bytes": e.size_bytes,
+                    "created_at": e.created_at.isoformat(),
+                    "expires_at": e.expires_at.isoformat() if e.expires_at else None,
+                }
+                for e in entries
+            ],
+        }
 
     @mcp.tool()
-    async def buffer_list() -> dict[str, Any]:
-        """List all buffer entries.
-
-        Returns:
-            A summary of all entries including their IDs and creation times.
-        """
+    async def buffer_expire(buffer_id: str) -> dict[str, Any]:
+        """Expire a buffered file and release its storage."""
         try:
-            entries = await backend.list_entries()
-            return {
-                "count": len(entries),
-                "entries": [
-                    {
-                        "id": entry.id,
-                        "created_at": entry.created_at.isoformat(),
-                        "updated_at": entry.updated_at.isoformat(),
-                        "content_preview": entry.content[:100] + "..." if len(entry.content) > 100 else entry.content
-                    }
-                    for entry in entries
-                ]
-            }
-        except Exception as e:
-            return {"error": f"Failed to list entries: {str(e)}"}
-
-    @mcp.tool()
-    async def buffer_delete(entry_id: str) -> dict[str, Any]:
-        """Delete a buffer entry by its ID.
-
-        Args:
-            entry_id: The unique identifier of the entry to delete.
-
-        Returns:
-            Confirmation that the entry was deleted or an error message if not found.
-        """
-        try:
-            result = await backend.delete_entry(entry_id)
-            if result:
-                return {"id": entry_id, "message": "Entry deleted successfully"}
-            return {"error": f"Entry with ID '{entry_id}' not found"}
-        except Exception as e:
-            return {"error": f"Failed to delete entry: {str(e)}"}
+            await backend.expire(buffer_id)
+        except BufferBackendError as e:
+            return {"error": str(e)}
+        return {"buffer_id": buffer_id, "message": "Entry expired successfully"}

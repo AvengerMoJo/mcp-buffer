@@ -1,184 +1,235 @@
-"""Tests for BufferBackend interface."""
+"""Tests for the BufferBackend contract, LocalFileBackend, and BufferRegistry."""
+
+from __future__ import annotations
+
+import time
+from datetime import datetime, timezone
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime
-from pathlib import Path
-import uuid
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from mcp_buffer.models import BufferEntry
 from mcp_buffer.backend import BufferBackend, BufferBackendError
+from mcp_buffer.local_backend import LocalFileBackend
+from mcp_buffer.models import BufferEntry
+from mcp_buffer.registry import BufferRegistry
 
 
-class MockBufferBackend(BufferBackend):
-    """A simple in-memory implementation for testing."""
-
-    def __init__(self):
-        self._entries: dict[str, BufferEntry] = {}
-
-    async def create_entry(self, entry: BufferEntry) -> BufferEntry:
-        self._entries[entry.id] = entry
-        return entry
-
-    async def get_entry(self, entry_id: str) -> BufferEntry | None:
-        return self._entries.get(entry_id)
-
-    async def update_entry(self, entry: BufferEntry) -> BufferEntry:
-        if entry.id not in self._entries:
-            raise BufferBackendError(f"Entry {entry.id} not found")
-        self._entries[entry.id] = entry
-        return entry
-
-    async def delete_entry(self, entry_id: str) -> bool:
-        if entry_id in self._entries:
-            del self._entries[entry_id]
-            return True
-        return False
-
-    async def list_entries(self) -> list[BufferEntry]:
-        return sorted(
-            self._entries.values(),
-            key=lambda e: e.created_at,
-            reverse=True
-        )
+def make_entry(**kwargs) -> BufferEntry:
+    defaults = dict(
+        buffer_id="test-id",
+        provider="mock",
+        filename="test.txt",
+        mime_type="text/plain",
+        link="https://example.com/test",
+        size_bytes=100,
+        created_at=datetime.now(timezone.utc),
+        expires_at=None,
+        folder_id=None,
+        status="active",
+    )
+    return BufferEntry(**{**defaults, **kwargs})
 
 
-@pytest.fixture
-def backend() -> MockBufferBackend:
-    """Create a mock backend for testing."""
-    return MockBufferBackend()
+class MockBackend(BufferBackend):
+    async def buffer_upload(self, content, filename, mime_type=None, ttl_seconds=None, folder_id=None):
+        return make_entry(filename=filename)
+
+    async def get_link(self, buffer_id):
+        return "https://example.com/mock"
+
+    async def expire(self, buffer_id):
+        pass
+
+    async def list(self, folder_id=None):
+        return [make_entry()]
+
+    async def can_reuse(self, buffer_id):
+        return True
 
 
 class TestBufferEntry:
-    """Tests for the BufferEntry model."""
+    def test_fields(self):
+        e = make_entry()
+        assert e.buffer_id == "test-id"
+        assert e.status == "active"
+        assert e.expires_at is None
 
-    def test_buffer_entry_creation(self):
-        """Test creating a buffer entry with required fields."""
-        entry = BufferEntry(
-            id="test-123",
-            content="Hello, world!"
-        )
-        assert entry.id == "test-123"
-        assert entry.content == "Hello, world!"
-        assert isinstance(entry.created_at, datetime)
-        assert isinstance(entry.updated_at, datetime)
-        assert entry.metadata == {}
+    def test_is_expired_with_no_expiry(self):
+        assert make_entry(expires_at=None).is_expired() is False
 
-    def test_buffer_entry_update(self):
-        """Test that update() refreshes the timestamp."""
-        initial_time = datetime(2024, 1, 1, 12, 0, 0)
-        entry = BufferEntry(
-            id="test-123",
-            content="Hello, world!",
-            created_at=initial_time,
-            updated_at=initial_time
-        )
+    def test_is_expired_past(self):
+        past = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        assert make_entry(expires_at=past).is_expired() is True
 
-        # Simulate time passing and update
-        with patch("mcp_buffer.models.datetime") as mock_datetime:
-            mock_datetime.utcnow.return_value = datetime(2024, 1, 1, 13, 0, 0)
-            entry.update()
-
-        assert entry.updated_at != initial_time
+    def test_is_expired_future(self):
+        future = datetime(2999, 1, 1, tzinfo=timezone.utc)
+        assert make_entry(expires_at=future).is_expired() is False
 
 
-class TestBufferBackendInterface:
-    """Tests for the BufferBackend interface behavior."""
+class TestBufferRegistry:
+    def setup_method(self):
+        BufferRegistry._reset_for_tests()
+
+    def test_register_and_get(self):
+        BufferRegistry.register("mock_test")(MockBackend)
+        backend = BufferRegistry.get_backend("mock_test")
+        assert isinstance(backend, MockBackend)
+
+    def test_get_returns_cached_instance(self):
+        BufferRegistry.register("mock_test2")(MockBackend)
+        first = BufferRegistry.get_backend("mock_test2")
+        second = BufferRegistry.get_backend("mock_test2")
+        assert first is second
+
+    def test_unknown_raises(self):
+        with pytest.raises(ValueError, match="Unknown buffer backend"):
+            BufferRegistry.get_backend("nonexistent_provider")
+
+    def test_local_backend_is_registered_by_import(self):
+        import mcp_buffer.local_backend  # noqa: F401
+
+        assert "local" in BufferRegistry.known_backends()
+
+
+@pytest.fixture
+def local_backend(tmp_path) -> LocalFileBackend:
+    return LocalFileBackend(store_dir=str(tmp_path))
+
+
+class TestLocalFileBackendUpload:
+    @pytest.mark.asyncio
+    async def test_upload_raw_bytes(self, local_backend: LocalFileBackend):
+        entry = await local_backend.buffer_upload(b"hello world", filename="hello.txt")
+        assert entry.filename == "hello.txt"
+        assert entry.size_bytes == len(b"hello world")
+        assert entry.mime_type == "text/plain"
+        assert entry.provider == "local"
+        assert entry.link.startswith("http://127.0.0.1:")
 
     @pytest.mark.asyncio
-    async def test_create_entry(self, backend: MockBufferBackend):
-        """Test creating a new buffer entry."""
-        entry = BufferEntry(
-            id="test-1",
-            content="First entry"
-        )
-        result = await backend.create_entry(entry)
-
-        assert result.id == "test-1"
-        assert result.content == "First entry"
-        assert result in (await backend.list_entries())
+    async def test_upload_from_local_file_path(self, local_backend: LocalFileBackend, tmp_path):
+        src = tmp_path / "source.pdf"
+        src.write_bytes(b"%PDF-1.4 fake pdf bytes")
+        entry = await local_backend.buffer_upload(str(src), filename="source.pdf")
+        assert entry.mime_type == "application/pdf"
+        assert entry.size_bytes == src.stat().st_size
 
     @pytest.mark.asyncio
-    async def test_get_existing_entry(self, backend: MockBufferBackend):
-        """Test retrieving an existing entry."""
-        entry = BufferEntry(id="test-2", content="Second entry")
-        await backend.create_entry(entry)
-
-        result = await backend.get_entry("test-2")
-        assert result is not None
-        assert result.content == "Second entry"
+    async def test_upload_raw_text_content_not_a_path(self, local_backend: LocalFileBackend):
+        entry = await local_backend.buffer_upload("just some text", filename="note.txt")
+        assert entry.size_bytes == len(b"just some text")
 
     @pytest.mark.asyncio
-    async def test_get_nonexistent_entry(self, backend: MockBufferBackend):
-        """Test retrieving a non-existent entry returns None."""
-        result = await backend.get_entry("nonexistent")
-        assert result is None
+    async def test_explicit_mime_type_overrides_guess(self, local_backend: LocalFileBackend):
+        entry = await local_backend.buffer_upload(b"data", filename="file.bin", mime_type="application/custom")
+        assert entry.mime_type == "application/custom"
 
     @pytest.mark.asyncio
-    async def test_update_existing_entry(self, backend: MockBufferBackend):
-        """Test updating an existing entry."""
-        entry = BufferEntry(id="test-3", content="Original content")
-        await backend.create_entry(entry)
+    async def test_ttl_sets_expiry(self, local_backend: LocalFileBackend):
+        entry = await local_backend.buffer_upload(b"data", filename="f.txt", ttl_seconds=3600)
+        assert entry.expires_at is not None
+        assert entry.expires_at > datetime.now(timezone.utc)
 
-        updated = BufferEntry(
-            id="test-3",
-            content="Updated content",
-            created_at=entry.created_at,
-            updated_at=entry.updated_at
-        )
-        result = await backend.update_entry(updated)
 
-        assert result.content == "Updated content"
+class TestLocalFileBackendLinkAndStream:
+    @pytest.mark.asyncio
+    async def test_get_link_returns_working_url(self, local_backend: LocalFileBackend):
+        import urllib.request
+
+        entry = await local_backend.buffer_upload(b"stream me", filename="s.txt")
+        link = await local_backend.get_link(entry.buffer_id)
+        assert link == entry.link
+        with urllib.request.urlopen(link, timeout=5) as resp:
+            assert resp.read() == b"stream me"
+            assert resp.headers.get("Content-Type") == "text/plain"
 
     @pytest.mark.asyncio
-    async def test_delete_existing_entry(self, backend: MockBufferBackend):
-        """Test deleting an existing entry."""
-        entry = BufferEntry(id="test-4", content="To be deleted")
-        await backend.create_entry(entry)
+    async def test_range_request_is_honored(self, local_backend: LocalFileBackend):
+        import urllib.request
 
-        result = await backend.delete_entry("test-4")
-        assert result is True
-        assert await backend.get_entry("test-4") is None
-
-    @pytest.mark.asyncio
-    async def test_delete_nonexistent_entry(self, backend: MockBufferBackend):
-        """Test deleting a non-existent entry returns False."""
-        result = await backend.delete_entry("nonexistent")
-        assert result is False
+        entry = await local_backend.buffer_upload(b"0123456789", filename="range.bin")
+        req = urllib.request.Request(entry.link, headers={"Range": "bytes=2-5"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            assert resp.status == 206
+            assert resp.read() == b"2345"
 
     @pytest.mark.asyncio
-    async def test_list_entries_empty(self, backend: MockBufferBackend):
-        """Test listing entries when empty."""
-        entries = await backend.list_entries()
-        assert len(entries) == 0
+    async def test_get_link_unknown_id_raises(self, local_backend: LocalFileBackend):
+        with pytest.raises(BufferBackendError):
+            await local_backend.get_link("does-not-exist")
 
     @pytest.mark.asyncio
-    async def test_list_entries_sorted_newest_first(self, backend: MockBufferBackend):
-        """Test that list_entries returns entries sorted by creation time (newest first)."""
-        entry1 = BufferEntry(id="first", content="First")
-        entry2 = BufferEntry(id="second", content="Second")
+    async def test_get_link_after_expire_raises(self, local_backend: LocalFileBackend):
+        entry = await local_backend.buffer_upload(b"gone soon", filename="g.txt")
+        await local_backend.expire(entry.buffer_id)
+        with pytest.raises(BufferBackendError):
+            await local_backend.get_link(entry.buffer_id)
 
-        # Create with explicit timestamps to control ordering
-        from unittest.mock import patch
-        with patch("mcp_buffer.models.datetime") as mock_datetime:
-            mock_datetime.utcnow.return_value = datetime(2024, 1, 1)
-            await backend.create_entry(entry1)
-            mock_datetime.utcnow.return_value = datetime(2024, 1, 2)
-            await backend.create_entry(entry2)
-
-        entries = await backend.list_entries()
-        assert len(entries) == 2
-        assert entries[0].id == "second"  # Newest first
+    @pytest.mark.asyncio
+    async def test_ttl_expiry_is_enforced_on_access(self, local_backend: LocalFileBackend):
+        entry = await local_backend.buffer_upload(b"short lived", filename="t.txt", ttl_seconds=0)
+        time.sleep(0.01)
+        assert await local_backend.can_reuse(entry.buffer_id) is False
+        with pytest.raises(BufferBackendError):
+            await local_backend.get_link(entry.buffer_id)
 
 
-class TestBufferBackendError:
-    """Tests for BufferBackendError exception."""
+class TestLocalFileBackendExpireAndList:
+    @pytest.mark.asyncio
+    async def test_expire_unknown_raises(self, local_backend: LocalFileBackend):
+        with pytest.raises(BufferBackendError):
+            await local_backend.expire("does-not-exist")
 
-    def test_buffer_backend_error_message(self):
-        """Test that the error message is preserved."""
-        msg = "Connection failed"
-        error = BufferBackendError(msg)
-        assert str(error) == msg
+    @pytest.mark.asyncio
+    async def test_expire_removes_file_from_disk(self, local_backend: LocalFileBackend, tmp_path):
+        entry = await local_backend.buffer_upload(b"bye", filename="bye.txt")
+        stored_path = tmp_path / entry.buffer_id
+        assert stored_path.is_file()
+        await local_backend.expire(entry.buffer_id)
+        assert not stored_path.is_file()
+
+    @pytest.mark.asyncio
+    async def test_list_excludes_expired(self, local_backend: LocalFileBackend):
+        keep = await local_backend.buffer_upload(b"keep", filename="keep.txt")
+        gone = await local_backend.buffer_upload(b"gone", filename="gone.txt")
+        await local_backend.expire(gone.buffer_id)
+
+        entries = await local_backend.list()
+        ids = [e.buffer_id for e in entries]
+        assert keep.buffer_id in ids
+        assert gone.buffer_id not in ids
+
+    @pytest.mark.asyncio
+    async def test_list_sorted_newest_first(self, local_backend: LocalFileBackend):
+        first = await local_backend.buffer_upload(b"1", filename="1.txt")
+        second = await local_backend.buffer_upload(b"2", filename="2.txt")
+        entries = await local_backend.list()
+        assert entries[0].buffer_id == second.buffer_id
+        assert entries[1].buffer_id == first.buffer_id
+
+    @pytest.mark.asyncio
+    async def test_list_filters_by_folder_id(self, local_backend: LocalFileBackend):
+        await local_backend.buffer_upload(b"a", filename="a.txt", folder_id="alpha")
+        beta = await local_backend.buffer_upload(b"b", filename="b.txt", folder_id="beta")
+
+        entries = await local_backend.list(folder_id="beta")
+        assert [e.buffer_id for e in entries] == [beta.buffer_id]
+
+    @pytest.mark.asyncio
+    async def test_can_reuse_true_for_active_entry(self, local_backend: LocalFileBackend):
+        entry = await local_backend.buffer_upload(b"x", filename="x.txt")
+        assert await local_backend.can_reuse(entry.buffer_id) is True
+
+    @pytest.mark.asyncio
+    async def test_can_reuse_false_for_unknown(self, local_backend: LocalFileBackend):
+        assert await local_backend.can_reuse("nope") is False
+
+
+class TestLocalFileBackendPersistence:
+    @pytest.mark.asyncio
+    async def test_index_survives_reload(self, tmp_path):
+        backend1 = LocalFileBackend(store_dir=str(tmp_path))
+        entry = await backend1.buffer_upload(b"persisted", filename="p.txt")
+
+        backend2 = LocalFileBackend(store_dir=str(tmp_path))
+        reloaded = await backend2.list()
+        assert any(e.buffer_id == entry.buffer_id for e in reloaded)

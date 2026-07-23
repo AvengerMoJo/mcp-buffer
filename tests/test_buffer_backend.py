@@ -103,7 +103,7 @@ class TestLocalFileBackendUpload:
         assert entry.size_bytes == len(b"hello world")
         assert entry.mime_type == "text/plain"
         assert entry.provider == "local"
-        assert entry.link.startswith("http://127.0.0.1:")
+        assert entry.link == f"http://127.0.0.1:8600/buffer/{entry.buffer_id}"
 
     @pytest.mark.asyncio
     async def test_upload_from_local_file_path(self, local_backend: LocalFileBackend, tmp_path):
@@ -131,37 +131,15 @@ class TestLocalFileBackendUpload:
 
 
 class TestLocalFileBackendLinkAndStream:
-    @pytest.mark.asyncio
-    async def test_get_link_returns_working_url(self, local_backend: LocalFileBackend):
-        import urllib.request
+    """Serving is exercised end-to-end in test_file_routes.py (real Starlette
+    app + TestClient); these tests cover only the backend's own bookkeeping
+    (get_link/expire/TTL semantics), not HTTP behavior."""
 
+    @pytest.mark.asyncio
+    async def test_get_link_matches_upload_link(self, local_backend: LocalFileBackend):
         entry = await local_backend.buffer_upload(b"stream me", filename="s.txt")
         link = await local_backend.get_link(entry.buffer_id)
         assert link == entry.link
-        with urllib.request.urlopen(link, timeout=5) as resp:
-            assert resp.read() == b"stream me"
-            assert resp.headers.get("Content-Type") == "text/plain"
-
-    @pytest.mark.asyncio
-    async def test_range_request_is_honored(self, local_backend: LocalFileBackend):
-        import urllib.request
-
-        entry = await local_backend.buffer_upload(b"0123456789", filename="range.bin")
-        req = urllib.request.Request(entry.link, headers={"Range": "bytes=2-5"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            assert resp.status == 206
-            assert resp.read() == b"2345"
-
-    @pytest.mark.asyncio
-    async def test_head_request_returns_headers_no_body(self, local_backend: LocalFileBackend):
-        import urllib.request
-
-        entry = await local_backend.buffer_upload(b"head me", filename="h.txt")
-        req = urllib.request.Request(entry.link, method="HEAD")
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            assert resp.status == 200
-            assert resp.headers.get("Content-Length") == str(len(b"head me"))
-            assert resp.read() == b""
 
     @pytest.mark.asyncio
     async def test_get_link_unknown_id_raises(self, local_backend: LocalFileBackend):
@@ -241,21 +219,21 @@ class TestLocalFileBackendPublicUrl:
         monkeypatch.setenv("MCP_BUFFER_PUBLIC_URL", "https://buffer.eclipsogate.org")
         backend = LocalFileBackend(store_dir=str(tmp_path))
         entry = await backend.buffer_upload(b"public", filename="p.txt")
-        assert entry.link == f"https://buffer.eclipsogate.org/{entry.buffer_id}"
+        assert entry.link == f"https://buffer.eclipsogate.org/buffer/{entry.buffer_id}"
 
     @pytest.mark.asyncio
     async def test_public_url_trailing_slash_is_stripped(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MCP_BUFFER_PUBLIC_URL", "https://buffer.eclipsogate.org/")
         backend = LocalFileBackend(store_dir=str(tmp_path))
         entry = await backend.buffer_upload(b"public", filename="p.txt")
-        assert entry.link == f"https://buffer.eclipsogate.org/{entry.buffer_id}"
+        assert entry.link == f"https://buffer.eclipsogate.org/buffer/{entry.buffer_id}"
 
     @pytest.mark.asyncio
-    async def test_no_public_url_falls_back_to_local_server(self, tmp_path, monkeypatch):
+    async def test_no_public_url_falls_back_to_local_default(self, tmp_path, monkeypatch):
         monkeypatch.delenv("MCP_BUFFER_PUBLIC_URL", raising=False)
         backend = LocalFileBackend(store_dir=str(tmp_path))
         entry = await backend.buffer_upload(b"local", filename="l.txt")
-        assert entry.link.startswith("http://127.0.0.1:")
+        assert entry.link == f"http://127.0.0.1:8600/buffer/{entry.buffer_id}"
 
 
 class TestLocalFileBackendPersistence:

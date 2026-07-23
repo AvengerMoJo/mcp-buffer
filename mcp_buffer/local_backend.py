@@ -1,10 +1,12 @@
 """LocalFileBackend — filesystem-backed BufferBackend, no cloud auth needed.
 
 Stores uploaded files under MCP_BUFFER_LOCAL_DIR (default
-~/.mcp-buffer/store), tracks metadata in a JSON index alongside them, and
-serves them back over a lazily-started local HTTP server (http_server.py)
-with Range support so a downstream consumer can stream/seek large files
-instead of round-tripping them through JSON-RPC.
+~/.mcp-buffer/store), tracks metadata in a JSON index alongside them.
+Serving happens via file_routes.register_file_route(mcp), mounted onto
+the same FastMCP app (server.py) that serves the MCP protocol -- one
+process, one port, one hostname for both. This module only owns storage
+and the buffer_id -> (path, mime_type) registry entries; it does not run
+its own HTTP server.
 
 This is the reference implementation other backends (Drive/OneDrive/S3/
 Nextcloud) should match: same BufferBackend contract, same link shape
@@ -23,14 +25,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Union
 
-from . import http_server
+from . import file_routes
 from .backend import BufferBackend, BufferBackendError
-from .http_server import BufferHTTPServer
 from .models import BufferEntry
 from .registry import BufferRegistry
 
 _DIR_ENV_VAR = "MCP_BUFFER_LOCAL_DIR"
 _PUBLIC_URL_ENV_VAR = "MCP_BUFFER_PUBLIC_URL"
+_DEFAULT_LOCAL_BASE = "http://127.0.0.1:8600"
 
 
 @BufferRegistry.register("local")
@@ -42,8 +44,7 @@ class LocalFileBackend(BufferBackend):
         self._store_dir.mkdir(parents=True, exist_ok=True)
         self._index_path = self._store_dir / "_index.json"
         self._entries: dict[str, BufferEntry] = self._load_index()
-        self._server = BufferHTTPServer.shared()
-        self._register_active_entries_with_server()
+        self._register_active_entries_with_routes()
 
     # ------------------------------------------------------------------
     # BufferBackend contract
@@ -72,14 +73,14 @@ class LocalFileBackend(BufferBackend):
             provider="local",
             filename=filename,
             mime_type=resolved_mime,
-            link=f"{self._base_link_url()}/{buffer_id}",
+            link=f"{self._base_link_url()}/buffer/{buffer_id}",
             size_bytes=dest.stat().st_size,
             expires_at=expires_at,
             folder_id=folder_id,
         )
         self._entries[buffer_id] = entry
         self._save_index()
-        http_server.register(buffer_id, str(dest), resolved_mime)
+        file_routes.register(buffer_id, str(dest), resolved_mime)
         return entry
 
     async def get_link(self, buffer_id: str) -> str:
@@ -92,7 +93,7 @@ class LocalFileBackend(BufferBackend):
             raise BufferBackendError(f"Unknown buffer_id '{buffer_id}'")
         entry.status = "expired"
         self._save_index()
-        http_server.unregister(buffer_id)
+        file_routes.unregister(buffer_id)
         dest = self._store_dir / buffer_id
         if dest.is_file():
             await asyncio.to_thread(dest.unlink)
@@ -112,7 +113,7 @@ class LocalFileBackend(BufferBackend):
         if entry.is_expired():
             entry.status = "expired"
             self._save_index()
-            http_server.unregister(buffer_id)
+            file_routes.unregister(buffer_id)
             return False
         return True
 
@@ -122,13 +123,15 @@ class LocalFileBackend(BufferBackend):
 
     def _base_link_url(self) -> str:
         """Public-facing base URL for links, e.g. https://buffer.eclipsogate.org
-        via MCP_BUFFER_PUBLIC_URL when this server sits behind a reverse
-        proxy / tunnel; falls back to the local server's own loopback
-        address for same-host use."""
+        via MCP_BUFFER_PUBLIC_URL when this process sits behind a reverse
+        proxy / tunnel; falls back to a loopback default for same-host use.
+        Whatever host:port actually ends up serving requests must have
+        called file_routes.register_file_route(mcp) -- this backend only
+        builds the URL, server.py is what makes it resolve."""
         public = os.environ.get(_PUBLIC_URL_ENV_VAR)
         if public:
             return public.rstrip("/")
-        return self._server.base_url()
+        return _DEFAULT_LOCAL_BASE
 
     def _write_content(self, content: Union[str, bytes], dest: Path) -> None:
         if isinstance(content, (bytes, bytearray)):
@@ -147,21 +150,21 @@ class LocalFileBackend(BufferBackend):
         if entry.is_expired():
             entry.status = "expired"
             self._save_index()
-            http_server.unregister(buffer_id)
+            file_routes.unregister(buffer_id)
         if entry.status != "active":
             raise BufferBackendError(f"buffer_id '{buffer_id}' is expired")
         return entry
 
-    def _register_active_entries_with_server(self) -> None:
+    def _register_active_entries_with_routes(self) -> None:
         """On startup, re-register already-buffered files (from a prior
-        process) with the shared server -- it starts with an empty
-        in-memory lookup table each run."""
+        process) with file_routes -- its in-memory lookup table starts
+        empty each run."""
         for buffer_id, entry in self._entries.items():
             if entry.status != "active" or entry.is_expired():
                 continue
             path = self._store_dir / buffer_id
             if path.is_file():
-                http_server.register(buffer_id, str(path), entry.mime_type)
+                file_routes.register(buffer_id, str(path), entry.mime_type)
 
     def _sweep_expired(self) -> None:
         changed = False
@@ -169,7 +172,7 @@ class LocalFileBackend(BufferBackend):
             if entry.status == "active" and entry.is_expired():
                 entry.status = "expired"
                 changed = True
-                http_server.unregister(buffer_id)
+                file_routes.unregister(buffer_id)
         if changed:
             self._save_index()
 

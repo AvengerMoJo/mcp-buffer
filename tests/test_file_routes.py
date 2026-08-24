@@ -10,11 +10,39 @@ from mcp.server.fastmcp import FastMCP
 from starlette.testclient import TestClient
 
 from mcp_buffer import file_routes
+from mcp_buffer.backend import BufferBackend
+from mcp_buffer.local_backend import LocalFileBackend
+
+
+class _UploadBackend(BufferBackend):
+    """Minimal backend over LocalFileBackend so the upload route can be
+    exercised end-to-end through a real ASGI app."""
+
+    def __init__(self, store_dir):
+        self._inner = LocalFileBackend(store_dir=str(store_dir))
+
+    async def buffer_upload(self, content, filename, mime_type=None, ttl_seconds=None, folder_id=None):
+        return await self._inner.buffer_upload(content, filename, mime_type, ttl_seconds, folder_id)
+
+    async def get_link(self, buffer_id):
+        return await self._inner.get_link(buffer_id)
+
+    async def expire(self, buffer_id):
+        await self._inner.expire(buffer_id)
+
+    async def list(self, folder_id=None):
+        return await self._inner.list(folder_id)
+
+    async def can_reuse(self, buffer_id):
+        return await self._inner.can_reuse(buffer_id)
 
 
 @pytest.fixture
 def client(tmp_path):
     mcp = FastMCP("test-mcp-buffer")
+    # Upload route registered first -- same ordering server.py uses so
+    # /buffer/upload isn't shadowed by /buffer/{buffer_id}.
+    file_routes.register_upload_route(mcp, _UploadBackend(tmp_path))
     file_routes.register_file_route(mcp)
     app = mcp.streamable_http_app()
     with TestClient(app) as c:
@@ -107,3 +135,68 @@ class TestRegistry:
 
     def test_unregister_unknown_id_is_a_noop(self):
         file_routes.unregister("never-registered")  # must not raise
+
+
+class TestUpload:
+    def test_put_raw_bytes_returns_json_with_working_link(self, client):
+        resp = client.put(
+            "/buffer/upload?filename=report.pdf",
+            content=b"%PDF-1.4 fake pdf bytes",
+            headers={"Content-Type": "application/pdf"},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["filename"] == "report.pdf"
+        assert data["mime_type"] == "application/pdf"
+        assert data["size_bytes"] == len(b"%PDF-1.4 fake pdf bytes")
+        # The link it hands back must actually serve the same bytes.
+        got = client.get(f"/buffer/{data['buffer_id']}")
+        assert got.status_code == 200
+        assert got.content == b"%PDF-1.4 fake pdf bytes"
+
+    def test_post_also_accepted(self, client):
+        resp = client.post("/buffer/upload?filename=a.txt", content=b"aaa")
+        assert resp.status_code == 201
+
+    def test_mime_type_falls_back_to_content_type_header(self, client):
+        resp = client.put(
+            "/buffer/upload?filename=x.bin",
+            content=b"\x00\x01",
+            headers={"Content-Type": "application/custom; charset=binary"},
+        )
+        assert resp.json()["mime_type"] == "application/custom"
+
+    def test_mime_type_guessed_from_filename_when_no_header(self, client):
+        resp = client.put("/buffer/upload?filename=doc.pdf", content=b"x")
+        assert resp.json()["mime_type"] == "application/pdf"
+
+    def test_explicit_mime_query_param_wins(self, client):
+        resp = client.put(
+            "/buffer/upload?filename=doc.pdf&mime_type=application/x-thing",
+            content=b"x",
+            headers={"Content-Type": "application/pdf"},
+        )
+        assert resp.json()["mime_type"] == "application/x-thing"
+
+    def test_default_filename_when_missing(self, client):
+        resp = client.put("/buffer/upload", content=b"anon")
+        assert resp.json()["filename"] == "upload.bin"
+
+    def test_empty_body_400s(self, client):
+        resp = client.put("/buffer/upload?filename=e.txt")
+        assert resp.status_code == 400
+
+    def test_bad_ttl_400s(self, client):
+        resp = client.put("/buffer/upload?filename=t.txt&ttl_seconds=soon", content=b"x")
+        assert resp.status_code == 400
+        assert "integer" in resp.text
+
+    def test_ttl_sets_expires_at(self, client):
+        resp = client.put("/buffer/upload?filename=t.txt&ttl_seconds=3600", content=b"x")
+        assert resp.json()["expires_at"] is not None
+
+    def test_upload_route_not_shadowed_by_download_route(self, client):
+        # GET /buffer/{buffer_id} would match the path /buffer/upload; the
+        # PUT route registered before it must win for uploads.
+        resp = client.put("/buffer/upload?filename=s.txt", content=b"shadow check")
+        assert resp.status_code == 201

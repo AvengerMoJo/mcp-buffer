@@ -21,6 +21,26 @@ python -m mcp_buffer.server --transport stdio
 Exposes 4 tools: `buffer_upload_file(path, filename?, mime_type?, ttl_seconds?, folder_id?)`,
 `buffer_get_link(buffer_id)`, `buffer_list(folder_id?)`, `buffer_expire(buffer_id)`.
 
+## Pastebin-style HTTP upload (remote callers)
+
+`buffer_upload_file` reads a *path* from the buffer host's disk, so it only
+works when the caller shares a filesystem with the server. Any remote
+caller pushes raw bytes instead and gets a public link back:
+
+```bash
+curl -X PUT 'https://buffer.example.com/buffer/upload?filename=report.pdf' \
+     -H 'Content-Type: application/pdf' \
+     --data-binary @report.pdf
+# -> {"buffer_id": "...", "link": "https://buffer.example.com/<id>",
+#     "filename": "report.pdf", "mime_type": "application/pdf",
+#     "size_bytes": 12345, "expires_at": null}
+```
+
+Then hand `link` to any consumer (another agent, a backend service,
+NotebookLM) that downloads it for local processing — no base64 through
+JSON-RPC, no shared filesystem required. `POST` also works; query params:
+`filename`, `mime_type`, `ttl_seconds`, `folder_id`.
+
 ## Quick start (as a library)
 
 ```python

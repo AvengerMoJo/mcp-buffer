@@ -17,6 +17,7 @@ route.
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 from pathlib import Path
@@ -106,3 +107,65 @@ def register_file_route(mcp) -> None:
     @mcp.custom_route("/buffer/{buffer_id}", methods=["GET", "HEAD"], include_in_schema=False)
     async def _buffer_file_route(request: Request) -> Response:
         return await _serve(request, send_body=request.method == "GET")
+
+
+def register_upload_route(mcp, backend: "BufferBackend") -> None:
+    """Mount PUT/POST /buffer/upload -- raw-body ingest, pastebin-style.
+
+    The MCP tool surface (buffer_upload_file) takes a *path*, which only
+    works when the caller shares a filesystem with this process. Remote
+    callers (another machine, another agent) push bytes instead:
+
+        curl -X PUT 'https://host/buffer/upload?filename=report.pdf' \\
+             -H 'Content-Type: application/pdf' --data-binary @report.pdf
+
+    and get back JSON {buffer_id, link, filename, mime_type, size_bytes,
+    expires_at}. Must be registered BEFORE register_file_route so
+    /buffer/upload isn't shadowed by the /buffer/{buffer_id} GET route.
+    """
+
+    @mcp.custom_route("/buffer/upload", methods=["PUT", "POST"], include_in_schema=False)
+    async def _buffer_upload_route(request: Request) -> Response:
+        body = await request.body()
+        if not body:
+            return Response("Empty request body", status_code=400)
+
+        params = request.query_params
+        filename = params.get("filename") or "upload.bin"
+        mime_type = (
+            params.get("mime_type")
+            or request.headers.get("content-type", "").split(";")[0].strip()
+            or None
+        )
+        ttl_seconds = None
+        if params.get("ttl_seconds"):
+            try:
+                ttl_seconds = int(params["ttl_seconds"])
+            except ValueError:
+                return Response("ttl_seconds must be an integer", status_code=400)
+
+        try:
+            entry = await backend.buffer_upload(
+                content=body,
+                filename=filename,
+                mime_type=mime_type,
+                ttl_seconds=ttl_seconds,
+                folder_id=params.get("folder_id"),
+            )
+        except Exception as e:
+            return Response(f"Upload failed: {e}", status_code=500)
+
+        return Response(
+            content=json.dumps(
+                {
+                    "buffer_id": entry.buffer_id,
+                    "link": entry.link,
+                    "filename": entry.filename,
+                    "mime_type": entry.mime_type,
+                    "size_bytes": entry.size_bytes,
+                    "expires_at": entry.expires_at.isoformat() if entry.expires_at else None,
+                }
+            ),
+            status_code=201,
+            media_type="application/json",
+        )

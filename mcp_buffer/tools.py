@@ -10,6 +10,11 @@ from mcp.server.fastmcp import FastMCP
 from .backend import BufferBackend, BufferBackendError
 
 
+def _public_base() -> str:
+    """Base URL callers can reach this server's HTTP routes on."""
+    return os.environ.get("MCP_BUFFER_PUBLIC_URL", "http://127.0.0.1:8600").rstrip("/")
+
+
 def register_buffer_tools(mcp: FastMCP, backend: BufferBackend) -> None:
     """Register MCP tools for buffer operations with a FastMCP server."""
 
@@ -39,6 +44,20 @@ def register_buffer_tools(mcp: FastMCP, backend: BufferBackend) -> None:
             or {"error": ...} if the upload failed.
         """
         resolved_filename = filename or os.path.basename(path)
+        if not os.path.isfile(path):
+            # Fail loudly: without this check a nonexistent path used to fall
+            # through to the backend's text fallback and got stored as the
+            # literal path string -- silently corrupt uploads for any caller
+            # whose filesystem differs from the buffer host's (e.g. a Mac
+            # client calling the public https:// service over MCP).
+            return {
+                "error": (
+                    f"Path '{path}' does not exist on the buffer host "
+                    f"('{os.uname().nodename}'). buffer_upload_file reads files "
+                    "from the host running this server; remote callers must "
+                    f"push bytes instead via PUT {_public_base()}/buffer/upload?filename=..."
+                )
+            }
         try:
             entry = await backend.buffer_upload(
                 content=path,

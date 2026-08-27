@@ -89,45 +89,6 @@ class TestGet:
         resp = client.get("/buffer/id3")
         assert resp.status_code == 404
 
-    def test_named_route_uses_extension_for_content_type(self, client, tmp_path):
-        # Stored as text/plain but requested via a .pdf name -> NotebookLM et
-        # al. get a PDF content-type and treat the bytes accordingly.
-        _write(tmp_path, "idpdf", b"%PDF-1.4 fake", mime_type="text/plain")
-        resp = client.get("/buffer/idpdf/report.pdf")
-        assert resp.status_code == 200
-        assert resp.headers["content-type"] == "application/pdf"
-        assert resp.content == b"%PDF-1.4 fake"
-
-    def test_named_route_matches_unnamed(self, client, tmp_path):
-        _write(tmp_path, "idtxt", b"hello world")
-        resp = client.get("/buffer/idtxt/notes.txt")
-        assert resp.status_code == 200
-        assert resp.content == b"hello world"
-
-    def test_named_route_unknown_buffer_id_404s(self, client):
-        resp = client.get("/buffer/nope/report.pdf")
-        assert resp.status_code == 404
-
-    def test_format_text_overrides_content_type(self, client, tmp_path):
-        _write(tmp_path, "idt", b"<html>not really</html>", mime_type="text/html")
-        resp = client.get("/buffer/idt?format=text")
-        assert resp.status_code == 200
-        assert resp.headers["content-type"] == "text/plain; charset=utf-8"
-        assert resp.content == b"<html>not really</html>"
-
-    def test_format_html_wraps_body_in_page(self, client, tmp_path):
-        _write(tmp_path, "idh", b"line one\nline two", mime_type="text/plain")
-        resp = client.get("/buffer/idh?format=html")
-        assert resp.status_code == 200
-        assert resp.headers["content-type"] == "text/html; charset=utf-8"
-        assert b"<pre>line one" in resp.content
-        assert b"</html>" in resp.content
-
-    def test_format_unknown_400s(self, client, tmp_path):
-        _write(tmp_path, "idb", b"x", mime_type="text/plain")
-        resp = client.get("/buffer/idb?format=docx")
-        assert resp.status_code == 400
-
 
 class TestHead:
     def test_head_returns_headers_no_body(self, client, tmp_path):

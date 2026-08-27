@@ -18,7 +18,6 @@ route.
 from __future__ import annotations
 
 import json
-import mimetypes
 import re
 import threading
 from pathlib import Path
@@ -67,38 +66,9 @@ async def _serve(request: Request, send_body: bool) -> Response:
     if resolved is None:
         return Response("Unknown or expired buffer_id", status_code=404)
     path, mime_type = resolved
-    # A trailing /realname.ext segment (see the second download route) lets
-    # consumers that sniff file type from the URL extension -- e.g.
-    # NotebookLM -- pick the right parser instead of treating the bytes as
-    # plain text. Prefer the extension's type when it differs and is known.
-    name = request.path_params.get("name")
-    if name:
-        ext_type = mimetypes.guess_type(name)[0]
-        if ext_type:
-            mime_type = ext_type
-
-    # ?format=... lets callers force a representation for consumers that
-    # sniff content by type, e.g. NotebookLM. `text` -> plain text; `html`
-    # -> bytes wrapped in a minimal <pre> HTML page (renders as a readable
-    # web page NotebookLM can ingest). Only applies to whole-file GETs.
-    fmt = request.query_params.get("format")
     file_path = Path(path)
     if not file_path.is_file():
         return Response("File no longer on disk", status_code=404)
-    if fmt and request.method == "GET":
-        body = file_path.read_bytes()
-        if fmt == "html":
-            wrapped = (
-                b"<!doctype html><html><head><meta charset='utf-8'><title>"
-                + (name or buffer_id).encode()
-                + b"</title></head><body><pre>"
-                + body
-                + b"</pre></body></html>"
-            )
-            return Response(content=wrapped, media_type="text/html")
-        if fmt == "text":
-            return Response(content=body, media_type="text/plain")
-        return Response(f"Unknown format '{fmt}' (expected 'text' or 'html')", status_code=400)
 
     size = file_path.stat().st_size
     start, end, is_partial = _parse_range(request.headers.get("range"), size)
@@ -136,17 +106,6 @@ def register_file_route(mcp) -> None:
 
     @mcp.custom_route("/buffer/{buffer_id}", methods=["GET", "HEAD"], include_in_schema=False)
     async def _buffer_file_route(request: Request) -> Response:
-        return await _serve(request, send_body=request.method == "GET")
-
-    # Trailing filename carries the real extension so URL-sniffing consumers
-    # (NotebookLM, etc.) parse the bytes as the right type. The name segment
-    # is advisory only -- content always comes from buffer_id.
-    @mcp.custom_route(
-        "/buffer/{buffer_id}/{name}",
-        methods=["GET", "HEAD"],
-        include_in_schema=False,
-    )
-    async def _buffer_file_named_route(request: Request) -> Response:
         return await _serve(request, send_body=request.method == "GET")
 
 

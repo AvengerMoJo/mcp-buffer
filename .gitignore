@@ -1,11 +1,14 @@
+# Never commit archive dumps of SSH keys or credential stores
+ssh_key.*
+*.tgz
+*.tar.gz
+*.tar.bz2
+*.tar
+
+# Python
 __pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
-.env
-.venv/
+*.pyc
 venv/
-*.log
+.venv/
+*.egg-info/
 .pytest_cache/
-.coverage

@@ -89,6 +89,27 @@ class TestGet:
         resp = client.get("/buffer/id3")
         assert resp.status_code == 404
 
+    def test_format_text_serves_bytes_as_plain_text(self, client, tmp_path):
+        _write(tmp_path, "idft", b"<html>not really html</html>", mime_type="text/html")
+        resp = client.get("/buffer/idft?format=text")
+        assert resp.status_code == 200
+        assert "text/plain" in resp.headers["content-type"]
+        assert resp.content == b"<html>not really html</html>"
+
+    def test_format_html_wraps_body_in_page(self, client, tmp_path):
+        _write(tmp_path, "idfh", b"# heading\nbody", mime_type="text/markdown")
+        resp = client.get("/buffer/idfh?format=html")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert b"# heading" in resp.content
+        assert b"<pre>" in resp.content
+        assert b"</html>" in resp.content
+
+    def test_unknown_format_400s(self, client, tmp_path):
+        _write(tmp_path, "idfx", b"x", mime_type="text/plain")
+        resp = client.get("/buffer/idfx?format=xml")
+        assert resp.status_code == 400
+
 
 class TestHead:
     def test_head_returns_headers_no_body(self, client, tmp_path):

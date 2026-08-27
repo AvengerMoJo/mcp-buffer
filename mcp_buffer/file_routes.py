@@ -70,6 +70,23 @@ async def _serve(request: Request, send_body: bool) -> Response:
     if not file_path.is_file():
         return Response("File no longer on disk", status_code=404)
 
+    # ?format=text|html re-serves the body in a more consumer-friendly form
+    # so tools like NotebookLM ingest it instead of treating raw markdown
+    # bytes as a plain text dump.
+    fmt = (request.query_params.get("format") or "").lower()
+    if fmt and request.method == "GET":
+        if fmt == "text":
+            return Response(content=file_path.read_bytes(), media_type="text/plain; charset=utf-8")
+        if fmt == "html":
+            body = file_path.read_text(encoding="utf-8", errors="replace")
+            page = (
+                "<!doctype html><html><head><meta charset='utf-8'>"
+                f"<title>{buffer_id}</title></head>"
+                f"<body><pre>{body}</pre></body></html>"
+            )
+            return Response(content=page, media_type="text/html; charset=utf-8")
+        return Response("format must be 'text' or 'html'", status_code=400)
+
     size = file_path.stat().st_size
     start, end, is_partial = _parse_range(request.headers.get("range"), size)
     length = end - start + 1

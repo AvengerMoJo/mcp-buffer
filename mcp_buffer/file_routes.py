@@ -91,17 +91,8 @@ async def _serve(request: Request, send_body: bool) -> Response:
     start, end, is_partial = _parse_range(request.headers.get("range"), size)
     length = end - start + 1
 
-    # Browsers/chats default to Latin-1 for any text/* without an explicit
-    # charset, which mojibakes UTF-8 markdown/text/JSON. Append charset only
-    # for text-ish types; binary stays as-is so image/PDF viewers pick their
-    # own handling.
-    def _content_type(mt: str) -> str:
-        if mt.startswith("text/") and "charset=" not in mt:
-            return f"{mt}; charset=utf-8"
-        return mt
-
     headers = {
-        "Content-Type": _content_type(mime_type),
+        "Content-Type": mime_type,
         "Content-Length": str(length),
         "Accept-Ranges": "bytes",
     }

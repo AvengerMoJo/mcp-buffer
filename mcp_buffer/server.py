@@ -20,7 +20,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 # backend module (google_drive, onedrive, s3, nextcloud, ...) should be
 # imported the same way to make itself available here.
 from . import local_backend  # noqa: F401
-from .file_routes import register_file_route, register_upload_route
+from .file_routes import register_file_route, register_upload_route, register_web_upload_route
 from .registry import BufferRegistry
 from .tools import register_buffer_tools
 
@@ -76,6 +76,7 @@ def create_server(host: str = "127.0.0.1", port: int = _DEFAULT_PORT) -> FastMCP
     # Upload route first: /buffer/upload must not be shadowed by the
     # /buffer/{buffer_id} download route registered below.
     register_upload_route(mcp, backend)
+    register_web_upload_route(mcp)
     if backend_name == "local":
         register_file_route(mcp)
     return mcp

@@ -43,6 +43,7 @@ def client(tmp_path):
     # Upload route registered first -- same ordering server.py uses so
     # /buffer/upload isn't shadowed by /buffer/{buffer_id}.
     file_routes.register_upload_route(mcp, _UploadBackend(tmp_path))
+    file_routes.register_web_upload_route(mcp)
     file_routes.register_file_route(mcp)
     app = mcp.streamable_http_app()
     with TestClient(app) as c:
@@ -68,7 +69,7 @@ class TestGet:
         resp = client.get("/buffer/id1")
         assert resp.status_code == 200
         assert resp.content == b"hello world"
-        assert resp.headers["content-type"] == "text/plain"
+        assert resp.headers["content-type"] == "text/plain; charset=utf-8"
         assert resp.headers["accept-ranges"] == "bytes"
 
     def test_get_unknown_buffer_id_404s(self, client):
@@ -221,3 +222,47 @@ class TestUpload:
         # PUT route registered before it must win for uploads.
         resp = client.put("/buffer/upload?filename=s.txt", content=b"shadow check")
         assert resp.status_code == 201
+
+
+class TestUploadToken:
+    def test_no_token_configured_allows_anonymous_upload(self, client, monkeypatch):
+        monkeypatch.delenv("MCP_BUFFER_UPLOAD_TOKEN", raising=False)
+        resp = client.put("/buffer/upload?filename=open.txt", content=b"x")
+        assert resp.status_code == 201
+
+    def test_token_configured_rejects_missing_token(self, client, monkeypatch):
+        monkeypatch.setenv("MCP_BUFFER_UPLOAD_TOKEN", "s3cret")
+        resp = client.put("/buffer/upload?filename=locked.txt", content=b"x")
+        assert resp.status_code == 401
+
+    def test_token_configured_rejects_wrong_header_token(self, client, monkeypatch):
+        monkeypatch.setenv("MCP_BUFFER_UPLOAD_TOKEN", "s3cret")
+        resp = client.put(
+            "/buffer/upload?filename=locked.txt",
+            content=b"x",
+            headers={"X-Upload-Token": "wrong"},
+        )
+        assert resp.status_code == 401
+
+    def test_token_configured_accepts_correct_header_token(self, client, monkeypatch):
+        monkeypatch.setenv("MCP_BUFFER_UPLOAD_TOKEN", "s3cret")
+        resp = client.put(
+            "/buffer/upload?filename=locked.txt",
+            content=b"x",
+            headers={"X-Upload-Token": "s3cret"},
+        )
+        assert resp.status_code == 201
+
+    def test_token_configured_accepts_correct_query_token(self, client, monkeypatch):
+        monkeypatch.setenv("MCP_BUFFER_UPLOAD_TOKEN", "s3cret")
+        resp = client.put("/buffer/upload?filename=locked.txt&token=s3cret", content=b"x")
+        assert resp.status_code == 201
+
+
+class TestWebUploadPage:
+    def test_web_page_loads(self, client):
+        resp = client.get("/buffer/web")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "mcp-buffer" in resp.text
+        assert "/buffer/upload" in resp.text

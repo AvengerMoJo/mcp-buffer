@@ -3,6 +3,8 @@ stops nonexistent paths from being silently stored as text."""
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 from mcp.server.fastmcp import FastMCP
 
@@ -41,6 +43,33 @@ class TestBufferUploadFilePathGuard:
         payload = _payload(result)
         assert "error" not in payload
         assert payload["size_bytes"] == len(b"%PDF-1.4 bytes")
+
+
+class TestBufferUploadBytes:
+    @pytest.mark.asyncio
+    async def test_valid_base64_uploads_normally(self, mcp):
+        raw = b"\x89PNG\r\n\x1a\nfake-image-bytes"
+        result = await mcp.call_tool(
+            "buffer_upload_bytes",
+            {
+                "content_base64": base64.b64encode(raw).decode("ascii"),
+                "filename": "photo.png",
+            },
+        )
+        payload = _payload(result)
+        assert "error" not in payload
+        assert payload["filename"] == "photo.png"
+        assert payload["size_bytes"] == len(raw)
+
+    @pytest.mark.asyncio
+    async def test_invalid_base64_returns_error(self, mcp):
+        result = await mcp.call_tool(
+            "buffer_upload_bytes",
+            {"content_base64": "not-valid-base64!!", "filename": "photo.png"},
+        )
+        payload = _payload(result)
+        assert "error" in payload
+        assert "not valid base64" in payload["error"]
 
 
 def _payload(result):

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import os
 from typing import Any, Optional
 
@@ -55,13 +57,65 @@ def register_buffer_tools(mcp: FastMCP, backend: BufferBackend) -> None:
                     f"Path '{path}' does not exist on the buffer host "
                     f"('{os.uname().nodename}'). buffer_upload_file reads files "
                     "from the host running this server; remote callers must "
-                    f"push bytes instead via PUT {_public_base()}/buffer/upload?filename=..."
+                    "push bytes instead — use buffer_upload_bytes(content_base64=...) "
+                    f"or PUT {_public_base()}/buffer/upload?filename=..."
                 )
             }
         try:
             entry = await backend.buffer_upload(
                 content=path,
                 filename=resolved_filename,
+                mime_type=mime_type,
+                ttl_seconds=ttl_seconds,
+                folder_id=folder_id,
+            )
+        except BufferBackendError as e:
+            return {"error": str(e)}
+        return {
+            "buffer_id": entry.buffer_id,
+            "link": entry.link,
+            "filename": entry.filename,
+            "mime_type": entry.mime_type,
+            "size_bytes": entry.size_bytes,
+            "expires_at": entry.expires_at.isoformat() if entry.expires_at else None,
+        }
+
+    @mcp.tool()
+    async def buffer_upload_bytes(
+        content_base64: str,
+        filename: str,
+        mime_type: Optional[str] = None,
+        ttl_seconds: Optional[int] = None,
+        folder_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Push base64-encoded content (e.g. an image attached in chat) into
+        the buffer and get back a streamable link.
+
+        Use this instead of buffer_upload_file when the caller has no
+        filesystem in common with the buffer host — e.g. a photo a chat
+        client is holding in-memory. Send the raw bytes base64-encoded as
+        a normal JSON-RPC string argument; no shared disk or separate HTTP
+        call required.
+
+        Args:
+            content_base64: Standard base64 (RFC 4648) of the file bytes.
+            filename: Name to store/serve it as.
+            mime_type: Content-Type; guessed from filename if omitted.
+            ttl_seconds: Optional expiry, relative to now.
+            folder_id: Optional grouping key (backend-specific).
+
+        Returns:
+            buffer_id, link, filename, mime_type, size_bytes, expires_at;
+            or {"error": ...} if the upload failed.
+        """
+        try:
+            raw = base64.b64decode(content_base64, validate=True)
+        except (binascii.Error, ValueError) as e:
+            return {"error": f"content_base64 is not valid base64: {e}"}
+        try:
+            entry = await backend.buffer_upload(
+                content=raw,
+                filename=filename,
                 mime_type=mime_type,
                 ttl_seconds=ttl_seconds,
                 folder_id=folder_id,

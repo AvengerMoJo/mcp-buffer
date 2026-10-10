@@ -160,6 +160,14 @@ class TestRegistry:
         file_routes.unregister("never-registered")  # must not raise
 
 
+class TestFormatHtml:
+    def test_file_content_is_escaped_not_injected(self, client, tmp_path):
+        _write(tmp_path, "evil", b"<script>alert(1)</script> & <b>x</b>")
+        body = client.get("/buffer/evil?format=html").text
+        assert "<script>" not in body and "<b>" not in body
+        assert "&lt;script&gt;alert(1)&lt;/script&gt; &amp; &lt;b&gt;x&lt;/b&gt;" in body
+
+
 class TestNonAsciiFilename:
     NAME = "Memoria 憶寶相片回憶陪談：體驗、資料收集與記憶治理整合策略.pdf"
 

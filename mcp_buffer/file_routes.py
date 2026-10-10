@@ -17,6 +17,7 @@ route.
 
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -95,8 +96,8 @@ async def _serve(request: Request, send_body: bool) -> Response:
             body = file_path.read_text(encoding="utf-8", errors="replace")
             page = (
                 "<!doctype html><html><head><meta charset='utf-8'>"
-                f"<title>{buffer_id}</title></head>"
-                f"<body><pre>{body}</pre></body></html>"
+                f"<title>{html.escape(buffer_id)}</title></head>"
+                f"<body><pre>{html.escape(body)}</pre></body></html>"
             )
             return Response(content=page, media_type="text/html; charset=utf-8")
         return Response("format must be 'text' or 'html'", status_code=400)

@@ -54,6 +54,7 @@ def client(tmp_path):
 def _clear_registry():
     yield
     file_routes._registry.clear()
+    file_routes._filenames.clear()
 
 
 def _write(tmp_path, buffer_id: str, content: bytes, mime_type: str = "text/plain"):
@@ -157,6 +158,47 @@ class TestRegistry:
 
     def test_unregister_unknown_id_is_a_noop(self):
         file_routes.unregister("never-registered")  # must not raise
+
+
+class TestNonAsciiFilename:
+    NAME = "Memoria 憶寶相片回憶陪談：體驗、資料收集與記憶治理整合策略.pdf"
+
+    def _upload(self, client):
+        from urllib.parse import quote
+        return client.put(
+            f"/buffer/upload?filename={quote(self.NAME)}",
+            content=b"%PDF-1.4 fake", headers={"Content-Type": "application/pdf"},
+        )
+
+    def test_upload_response_keeps_the_name_readable(self, client):
+        resp = self._upload(client)
+        assert resp.status_code == 201
+        assert self.NAME in resp.text            # raw body, not \\uXXXX escapes
+        assert "\\u" not in resp.text
+        assert resp.json()["filename"] == self.NAME
+
+    def test_download_carries_the_original_name(self, client):
+        from urllib.parse import quote, unquote
+        got = client.get(self._upload(client).json()["link"].replace("http://testserver", ""))
+        cd = got.headers["content-disposition"]
+        cd.encode("ascii")                       # header must be pure ASCII
+        assert cd.startswith("inline;") and "filename*=UTF-8''" in cd
+        assert unquote(cd.split("filename*=UTF-8''")[1]) == self.NAME
+        assert got.content == b"%PDF-1.4 fake"
+
+    def test_range_request_also_carries_the_name(self, client):
+        buffer_id = self._upload(client).json()["buffer_id"]
+        got = client.get(f"/buffer/{buffer_id}", headers={"Range": "bytes=0-3"})
+        assert got.status_code == 206 and "filename*=UTF-8''" in got.headers["content-disposition"]
+
+    def test_quotes_in_name_cannot_break_the_header(self, client):
+        resp = client.put('/buffer/upload?filename=a%22b%5Cc.txt', content=b"x")
+        cd = client.get(f"/buffer/{resp.json()['buffer_id']}").headers["content-disposition"]
+        assert cd.count('"') == 2
+
+    def test_unnamed_registration_sends_no_disposition(self, client, tmp_path):
+        _write(tmp_path, "plain", b"x")
+        assert "content-disposition" not in client.get("/buffer/plain").headers
 
 
 class TestUpload:

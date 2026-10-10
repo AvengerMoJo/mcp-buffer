@@ -80,7 +80,7 @@ class LocalFileBackend(BufferBackend):
         )
         self._entries[buffer_id] = entry
         self._save_index()
-        file_routes.register(buffer_id, str(dest), resolved_mime)
+        file_routes.register(buffer_id, str(dest), resolved_mime, filename)
         return entry
 
     async def get_link(self, buffer_id: str) -> str:
@@ -164,7 +164,7 @@ class LocalFileBackend(BufferBackend):
                 continue
             path = self._store_dir / buffer_id
             if path.is_file():
-                file_routes.register(buffer_id, str(path), entry.mime_type)
+                file_routes.register(buffer_id, str(path), entry.mime_type, entry.filename)
 
     def _sweep_expired(self) -> None:
         changed = False

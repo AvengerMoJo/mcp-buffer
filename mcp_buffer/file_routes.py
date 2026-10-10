@@ -21,6 +21,7 @@ import json
 import os
 import re
 import threading
+from urllib.parse import quote
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -33,16 +34,27 @@ _UPLOAD_TOKEN_ENV_VAR = "MCP_BUFFER_UPLOAD_TOKEN"
 
 _registry_lock = threading.Lock()
 _registry: Dict[str, Tuple[str, str]] = {}
+_filenames: Dict[str, str] = {}
 
 
-def register(buffer_id: str, path: str, mime_type: str) -> None:
+def register(buffer_id: str, path: str, mime_type: str, filename: Optional[str] = None) -> None:
     with _registry_lock:
         _registry[buffer_id] = (path, mime_type)
+        if filename:
+            _filenames[buffer_id] = filename
 
 
 def unregister(buffer_id: str) -> None:
     with _registry_lock:
         _registry.pop(buffer_id, None)
+        _filenames.pop(buffer_id, None)
+
+
+def _content_disposition(filename: str) -> str:
+    """RFC 6266 header carrying the original name: an ASCII `filename=` for old clients plus
+    `filename*=UTF-8''...` (percent-encoded) so non-ASCII names such as Chinese survive intact."""
+    ascii_name = re.sub(r'[^\x20-\x7e]|["\\]', "_", filename).strip() or "download"
+    return f"inline; filename=\"{ascii_name}\"; filename*=UTF-8\'\'{quote(filename, safe='')}"
 
 
 def _resolve(buffer_id: str) -> Optional[Tuple[str, str]]:
@@ -102,11 +114,15 @@ async def _serve(request: Request, send_body: bool) -> Response:
             return f"{mt}; charset=utf-8"
         return mt
 
+    with _registry_lock:
+        original_name = _filenames.get(buffer_id)
     headers = {
         "Content-Type": _content_type(mime_type),
         "Content-Length": str(length),
         "Accept-Ranges": "bytes",
     }
+    if original_name:
+        headers["Content-Disposition"] = _content_disposition(original_name)
     status_code = 200
     if is_partial:
         status_code = 206
@@ -214,10 +230,11 @@ def register_upload_route(mcp, backend: "BufferBackend") -> None:
                     "mime_type": entry.mime_type,
                     "size_bytes": entry.size_bytes,
                     "expires_at": entry.expires_at.isoformat() if entry.expires_at else None,
-                }
+                },
+                ensure_ascii=False,  # keep non-ASCII filenames readable instead of \\uXXXX escapes
             ),
             status_code=201,
-            media_type="application/json",
+            media_type="application/json; charset=utf-8",
         )
 
 
